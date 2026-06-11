@@ -1,28 +1,52 @@
 import marimo
 
-__generated_with = "0.23.9"
+__generated_with = "0.23.8"
 app = marimo.App(width="medium")
 
 
 @app.cell
 def _():
     import marimo as mo
-    import json
-    from datetime import date, timedelta
-    from collections import Counter
-    import polars as pl
     import numpy as np
-    from scipy.optimize import minimize
-    from scipy.stats import poisson
     import plotly.express as px
-    import plotly.io as pio
+    from datetime import date
+    import polars as pl
 
-    return Counter, date, json, minimize, np, pio, pl, poisson, timedelta
+    from utils import (
+        load_data,
+        build_model_df,
+        select_common_teams,
+        apply_team_grouping,
+        fit_model,
+        predict,
+        predict_all,
+        predict_winner,
+        monte_carlo,
+    )
+
+    return (
+        apply_team_grouping,
+        build_model_df,
+        date,
+        fit_model,
+        load_data,
+        mo,
+        monte_carlo,
+        np,
+        pl,
+        predict,
+        predict_all,
+        predict_winner,
+        px,
+        select_common_teams,
+    )
 
 
 @app.cell
-def _(pio):
-    pio.templates.default = "plotly_dark"
+def _(mo, px):
+    import plotly.io as pio
+    pio.templates.default = "plotly_dark" if  mo.app_meta().theme == "dark" else "ggplot2"
+    pio.templates[pio.templates.default].layout.colorway = px.colors.qualitative.T10
     return
 
 
@@ -33,17 +57,9 @@ def _(np):
 
 
 @app.cell
-def _(json, pl):
+def _(load_data):
     name_map = {"Bosnia and Herzegovina": "Bosnia & Herzegovina", "United States": "USA"}
-    res = (
-        pl.read_csv("data/results.csv", null_values=["NA"])
-        .with_columns(
-            pl.col("home_team").replace(name_map),
-            pl.col("away_team").replace(name_map)
-        )
-    )
-    with open("data/worldcup.json", "r") as _f:
-        wc = json.load(_f)
+    res, wc = load_data("data/results.csv", "data/worldcup.json", name_map)
     return res, wc
 
 
@@ -55,173 +71,116 @@ def _(date):
 
 
 @app.cell
-def _(half_life, pl, ref, res):
-    df_model = (
-        res
-        .with_columns(
-            pl.col("date").str.to_date()
-        )
-        .drop_nulls(["home_score", "away_score"])
-        .filter(pl.col("date") <= ref)
-        .with_columns(
-            weight = pl.lit(0.5).pow((pl.lit(ref) - pl.col("date")).dt.total_days() / half_life)
-        )
-        .with_columns(
-            pl.when(pl.col("tournament") == "Friendly")
-            .then(pl.col("weight") * 0.5)
-            .otherwise(pl.col("weight"))
-            .alias("weight")
-        )
-        .select("date", "home_team", "away_team", "home_score", "away_score", "neutral", "weight")
-    )
-    df_model
+def _(build_model_df, half_life, ref, res):
+    df_model = build_model_df(res, ref, half_life)
     return (df_model,)
 
 
 @app.cell
-def _(Counter, df_model, pl, ref, timedelta, wc):
-    wc_teams = {m[k] for m in wc["matches"] for k in ("team1", "team2") if m.get("group") and m.get(k)}
-    win = df_model.filter(pl.col("date") >= ref - timedelta(days=365 * 8))
-    cnt = Counter(win["home_team"].to_list()) + Counter(win["away_team"].to_list())
-    common = {t for t, c in cnt.items() if c >= 15} | wc_teams
+def _(df_model, ref, select_common_teams, wc):
+    common, win = select_common_teams(df_model, wc, ref)
     return common, win
 
 
 @app.cell
-def _(common, pl, win):
-    df_fit = win.with_columns(
-        pl.when(pl.col("home_team").is_in(common)).then(pl.col("home_team"))
-          .otherwise(pl.lit("Other")).alias("home_team"),
-        pl.when(pl.col("away_team").is_in(common)).then(pl.col("away_team"))
-          .otherwise(pl.lit("Other")).alias("away_team"),
-    )
+def _(apply_team_grouping, common, win):
+    df_fit = apply_team_grouping(win, common)
     return (df_fit,)
 
 
 @app.cell
-def _(df_fit, np):
-    teams = sorted(set(df_fit["home_team"]) | set(df_fit["away_team"]))
-    idx = {t: i for i, t in enumerate(teams)}
-    n = len(teams)
-
-    h = np.array([idx[t] for t in df_fit["home_team"]])
-    a = np.array([idx[t] for t in df_fit["away_team"]])
-    x = df_fit["home_score"].to_numpy()
-    y = df_fit["away_score"].to_numpy()
-    w = df_fit["weight"].to_numpy()
-    home_flag = np.where(df_fit["neutral"].to_numpy(), 0.0, 1.0)
-    return a, h, home_flag, idx, n, w, x, y
+def _(df_fit, fit_model):
+    model = fit_model(df_fit)
+    return (model,)
 
 
 @app.cell
-def _(a, h, home_flag, n, np, w, x, y):
-    def neg_loglik(p):
-        attack = np.append(p[:n-1], -p[:n-1].sum())
-        defense = p[n-1:2*n-1]
-        gamma = p[2*n-1]
-        rho = p[2*n]
-        log_lam = attack[h] - defense[a] + gamma * home_flag
-        log_mu = attack[a] - defense[h]
-        lam, mu = np.exp(log_lam), np.exp(log_mu)
-        tau = np.ones_like(lam)
-        m = (x==0) & (y==0)
-        tau[m] = 1 - lam[m] * mu[m] * rho
-        m = (x==0) & (y==1)
-        tau[m] = 1 + lam[m] * rho
-        m = (x==1) & (y==0)
-        tau[m] = 1 + mu[m] * rho
-        m = (x==1) & (y==1)
-        tau[m] = 1 - rho
-        tau = np.clip(tau, 1e-10, None)
-        ll = w * (np.log(tau) + x * log_lam - lam + y * log_mu - mu)
-    
-        return -ll.sum()
-
-    return (neg_loglik,)
-
-
-@app.cell
-def _(minimize, n, neg_loglik, np):
-    p0 = np.zeros(2 * n + 1)
-    p0[2*n-1] = 0.25
-    p0[2*n] = -0.05
-    fit = minimize(neg_loglik, p0, method="L-BFGS-B")
-
-    attack = np.append(fit.x[:n-1], -fit.x[:n-1].sum())
-    defense = fit.x[n-1:2*n-1]
-    gamma, rho = fit.x[2*n-1], fit.x[2*n]
-    return attack, defense, gamma, rho
-
-
-@app.cell
-def _(attack, defense, gamma, idx, np, poisson, rho):
-    def score_matrix(home, away, neutral=True):
-        hf = 0.0 if neutral else 1.0
-        lam = np.exp(attack[idx[home]] - defense[idx[away]] + gamma * hf)
-        mu = np.exp(attack[idx[away]] - defense[idx[home]])
-        p = np.outer(
-            poisson.pmf(np.arange(11), lam),
-            poisson.pmf(np.arange(11), mu)
-        )
-        p[0, 0] *= 1 - lam * mu * rho
-        p[0, 1] *= 1 + lam * rho
-        p[1, 0] *= 1 + mu * rho
-        p[1, 1] *= 1 - rho
-
-        return p / p.sum()
-
-    def vmtipset_score(ah, aa, x, y):
-        pts = 2 * (x == ah).astype(float)
-        pts += 2 * (y == aa).astype(float)
-        pts += 3 * (np.sign(ah - aa) == np.sign(x - y)).astype(float)
-
-        return pts
-
-    def best_tip(p, score_fn):
-        xs, ys = np.indices(p.shape)
-        best, best_ev = None, -1.0
-        for a in range(p.shape[0]):
-            for b in range(p.shape[1]):
-                ev = (p * score_fn(a, b, xs, ys)).sum()
-                if ev > best_ev:
-                    best_ev, best = ev, (a, b)
-
-        return best, best_ev
-
-    def predict(home, away, neutral=True):
-        p = score_matrix(home, away, neutral)
-        (a, b), ev = best_tip(p, vmtipset_score)
-        p1 = np.tril(p, -1).sum()
-        px = np.trace(p)
-        p2 = np.triu(p, 1).sum()
-
-        return a, b, ev, p1, px, p2
-
-    return (predict,)
-
-
-@app.cell
-def _(predict, wc):
-    for m in wc["matches"]:
-        if m.get("group") and m.get("team1") and m.get("team2"):
-            ht, at = m["team1"], m["team2"]
-            _a, _b, _ev, _p1, _px, _p2 = predict(ht, at)
-            print(f"{ht:20s} {_a}-{_b} {at:20s} EV={_ev:.2f} (1 {_p1:.0%} / X {_px:.0%} / 2 {_p2:.0%}")
+def _(model, predict_all, wc):
+    df_pred = predict_all(wc, model)
+    df_pred
     return
 
 
 @app.cell
-def _(predict):
+def _(model, predict_winner, rng):
     home = "Spain"
     away = "Argentina"
-    _a, _b, _ev, _p1, _px, _p2 = predict(home, away)
-    print(f"{home:20s} {_a}-{_b} {away:20s} EV={_ev:.2f} (1 {_p1:.0%} / X {_px:.0%} / 2 {_p2:.0%}")
-    return away, home
+    winner, home_goals, away_goals = predict_winner(home, away, model, rng)
+    print(f"{home} {home_goals}-{away_goals} {away} → {winner}")
+    return
 
 
 @app.cell
-def _(away, home, rng):
-    rng.choice([home, away])
+def _(model, predict):
+    _a, _b, _ev, _p1, _px, _p2 = predict("Brazil", "Germany", model)
+    print(f"{_a}-{_b} EV={_ev:.2f} (1 {_p1:.0%} / X {_px:.0%} / 2 {_p2:.0%})")
+    return
+
+
+@app.cell
+def _(model, monte_carlo, wc):
+    n_sims = 100000
+    df_sim, top_finals, top_matchups = monte_carlo(wc, model, n_sims=n_sims)
+    df_sim
+    return df_sim, n_sims, top_finals, top_matchups
+
+
+@app.cell
+def _(df_sim, pl, px):
+    _fig = px.bar(df_sim.sort("p_win").tail(10).with_columns(pl.col("p_win") * 100), y="team", x="p_win", text_auto=".1f")
+    _fig.update_layout(width=800, height=500, xaxis_title="Vinstchans (%)", yaxis_title="Land")
+    return
+
+
+@app.cell
+def _(df_sim, pl, px):
+    stage_map = {
+        "p_knockout": "16-delsfinal",
+        "p_r16": "Åttondelsfinal",
+        "p_qf": "Kvartsfinal",
+        "p_sf": "Semifinal",
+        "p_final": "Final",
+        "p_win": "Vinst"
+    }
+    _df_plot = (
+        df_sim
+        .filter(pl.col("team") == "Sweden")
+        .unpivot(index=["team", "group"], variable_name="Steg", value_name="Sannolikhet (%)")
+        .with_columns(
+            pl.col("Steg").replace(stage_map),
+            pl.col("Sannolikhet (%)") * 100
+        )
+    )
+    px.bar(_df_plot.sort("Sannolikhet (%)"), x="Sannolikhet (%)", y="Steg", text_auto=".2f")
+    return
+
+
+@app.cell
+def _(n_sims, pl, top_matchups):
+    df_final_teams = pl.DataFrame([{"Finallag": " - ".join(tt), "Andel (%)": n/n_sims * 100} for tt, n in top_matchups])
+    return (df_final_teams,)
+
+
+@app.cell
+def _(df_final_teams, px):
+    px.bar(df_final_teams.sort("Andel (%)"), y="Finallag", x="Andel (%)", text_auto=True)
+    return
+
+
+@app.cell
+def _(n_sims, pl, top_finals):
+    df_final_result = pl.DataFrame(
+        [
+            {"Finalresultat": f"{tt[0]} {tt[2]} - {tt[3]} {tt[1]}", "Andel (%)": n / n_sims * 100}
+            for tt, n in  top_finals
+        ]
+    )
+    return (df_final_result,)
+
+
+@app.cell
+def _(df_final_result, px):
+    px.bar(df_final_result.sort("Andel (%)"), y="Finalresultat", x="Andel (%)", text_auto=True)
     return
 
 
