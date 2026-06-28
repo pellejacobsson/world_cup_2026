@@ -1,11 +1,17 @@
 import json
 from collections import Counter
 from datetime import date, timedelta
+from pathlib import Path
 
 import numpy as np
 import polars as pl
 from scipy.optimize import minimize
 from scipy.stats import poisson
+
+# FIFA:s officiella tabell (Annex C): för varje kombination av de åtta grupper vars
+# treor går vidare anges vilken trea som hamnar i vilken Round of 32-match
+with open(Path(__file__).parent / "data" / "third_place_allocation.json") as f:
+    THIRD_ALLOC = json.load(f)
 
 
 def load_data(
@@ -260,33 +266,21 @@ def sample_match(
 
 
 def match_thirds(
-    slots: list[tuple[str, set[str]]], qualified: set[str]
+    slots: list[tuple[int, str]], qualified: set[str]
 ) -> dict[str, str]:
-    # Tilldela varje slutspelsplats en av de åtta kvalificerade trean-grupperna
-    assignment: dict[str, str] = {}
-    used: set[str] = set()
-
-    def bt(i: int) -> bool:
-        if i == len(slots):
-            return True
-        code, allowed = slots[i]
-        for g in allowed & qualified:
-            if g not in used:
-                used.add(g)
-                assignment[code] = g
-                if bt(i + 1):
-                    return True
-                used.remove(g)
-                del assignment[code]
-        return False
-
-    bt(0)
-    return assignment
+    # Slå upp den officiella slot-tilldelningen för just denna kombination av treor
+    row = THIRD_ALLOC["".join(sorted(qualified))]
+    return {code: row[str(num)][1:] for num, code in slots}
 
 
 def simulate_tournament(
-    wc: dict, mats: dict[tuple[str, str], np.ndarray], rng: np.random.Generator
+    wc: dict,
+    mats: dict[tuple[str, str], np.ndarray],
+    rng: np.random.Generator,
+    actual: dict[tuple[str, str], tuple[int, int]] | None = None,
 ) -> tuple[dict[str, int], tuple[str, str, int, int]]:
+    # Spelade gruppmatcher låses till sitt faktiska resultat, resten samplas
+    actual = actual or {}
     matches = wc["matches"]
 
     groups: dict[str, set[str]] = {}
@@ -301,7 +295,7 @@ def simulate_tournament(
     for m in matches:
         if m.get("group"):
             h, a = m["team1"], m["team2"]
-            hg, ag = sample_match(h, a, mats, rng)
+            hg, ag = actual[(h, a)] if (h, a) in actual else sample_match(h, a, mats, rng)
             gf[h] += hg
             ga[h] += ag
             gf[a] += ag
@@ -325,7 +319,7 @@ def simulate_tournament(
     qualified = set(best_groups)
 
     slots = [
-        (c, set(c[1:].split("/")))
+        (m["num"], c)
         for m in matches if m.get("round") == "Round of 32"
         for c in (m["team1"], m["team2"]) if c.startswith("3")
     ]
@@ -374,8 +368,140 @@ def simulate_tournament(
     return stage, final
 
 
+def most_likely_tournament(
+    wc: dict, model: dict, actual: dict[tuple[str, str], tuple[int, int]] | None = None
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, str]:
+    # Spelade gruppmatcher låses till sitt faktiska resultat, resten predikteras
+    actual = actual or {}
+    mats = precompute_matrices(wc, model)
+    matches = wc["matches"]
+
+    groups: dict[str, set[str]] = {}
+    for m in matches:
+        if m.get("group"):
+            g = m["group"].split()[1]
+            groups.setdefault(g, set()).update([m["team1"], m["team2"]])
+
+    pts: Counter = Counter()
+    gf: Counter = Counter()
+    ga: Counter = Counter()
+    group_rows = []
+    for m in matches:
+        if m.get("group"):
+            h, a = m["team1"], m["team2"]
+            played = (h, a) in actual
+            if played:
+                hg, ag = actual[(h, a)]
+            else:
+                p = mats[(h, a)]
+                k = int(np.argmax(p))
+                hg, ag = divmod(k, p.shape[1])
+            group_rows.append({
+                "group": m["group"],
+                "home_team": h, "away_team": a,
+                "home_goals": hg, "away_goals": ag,
+                "played": played,
+            })
+            gf[h] += hg
+            ga[h] += ag
+            gf[a] += ag
+            ga[a] += hg
+            if hg > ag:
+                pts[h] += 3
+            elif ag > hg:
+                pts[a] += 3
+            else:
+                pts[h] += 1
+                pts[a] += 1
+
+    # Alfabetisk tiebreak gör utfallet reproducerbart
+    def key(t: str) -> tuple:
+        return (pts[t], gf[t] - ga[t], gf[t], t)
+
+    group_rank = {g: sorted(ts, key=key, reverse=True) for g, ts in groups.items()}
+
+    best_groups = sorted(groups, key=lambda g: key(group_rank[g][2]), reverse=True)[:8]
+    qualified = set(best_groups)
+
+    standing_rows = []
+    for g, ts in group_rank.items():
+        for pos, t in enumerate(ts, start=1):
+            standing_rows.append({
+                "group": f"Group {g}",
+                "position": pos,
+                "team": t,
+                "points": pts[t],
+                "gf": gf[t],
+                "ga": ga[t],
+                "gd": gf[t] - ga[t],
+                "advanced": pos <= 2 or (pos == 3 and g in qualified),
+            })
+
+    slots = [
+        (m["num"], c)
+        for m in matches if m.get("round") == "Round of 32"
+        for c in (m["team1"], m["team2"]) if c.startswith("3")
+    ]
+    third_assign = match_thirds(slots, qualified)
+
+    winners: dict[int, str] = {}
+    losers: dict[int, str] = {}
+    champion = ""
+
+    def resolve(code: str) -> str:
+        c0 = code[0]
+        if c0 == "W":
+            return winners[int(code[1:])]
+        if c0 == "L":
+            return losers[int(code[1:])]
+        if c0 in ("1", "2"):
+            return group_rank[code[1]][int(c0) - 1]
+        return group_rank[third_assign[code]][2]
+
+    knockout_rows = []
+    for m in matches:
+        if m.get("group"):
+            continue
+        t1, t2 = resolve(m["team1"]), resolve(m["team2"])
+        p = mats[(t1, t2)]
+        k = int(np.argmax(p))
+        hg, ag = divmod(k, p.shape[1])
+        if hg > ag:
+            w = t1
+        elif ag > hg:
+            w = t2
+        else:
+            # Vid oavgjort: lag med högre vinstsannolikhet går vidare
+            w = t1 if np.tril(p, -1).sum() >= np.triu(p, 1).sum() else t2
+        l = t2 if w == t1 else t1
+        num = m.get("num")
+        if num is not None:
+            winners[num] = w
+            losers[num] = l
+        if m["round"] == "Final":
+            champion = w
+        knockout_rows.append({
+            "round": m["round"],
+            "match": m.get("num"),
+            "team1": t1, "team2": t2,
+            "goals1": hg, "goals2": ag,
+            "winner": w,
+        })
+
+    return (
+        pl.DataFrame(group_rows),
+        pl.DataFrame(standing_rows),
+        pl.DataFrame(knockout_rows),
+        champion,
+    )
+
+
 def monte_carlo(
-    wc: dict, model: dict, n_sims: int, seed: int = 0
+    wc: dict,
+    model: dict,
+    n_sims: int,
+    seed: int = 0,
+    actual: dict[tuple[str, str], tuple[int, int]] | None = None,
 ) -> tuple[
     pl.DataFrame,
     list[tuple[tuple[str, str, int, int], int]],
@@ -395,7 +521,7 @@ def monte_carlo(
     finals: Counter = Counter()
     matchups: Counter = Counter()
     for _ in range(n_sims):
-        stage, final = simulate_tournament(wc, mats, rng)
+        stage, final = simulate_tournament(wc, mats, rng, actual)
         for t, s in stage.items():
             counts[t][s] += 1
         finals[final] += 1
