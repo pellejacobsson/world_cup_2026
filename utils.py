@@ -464,15 +464,21 @@ def most_likely_tournament(
             continue
         t1, t2 = resolve(m["team1"]), resolve(m["team2"])
         p = mats[(t1, t2)]
-        k = int(np.argmax(p))
-        hg, ag = divmod(k, p.shape[1])
+        # Sannolikhet att t1 går vidare = vinst i ordinarie + halva oavgjort (straffar ≈ myntkast)
+        p1 = float(np.tril(p, -1).sum() + 0.5 * np.trace(p))
+        played = (t1, t2) in actual
+        if played:
+            hg, ag = actual[(t1, t2)]
+        else:
+            k = int(np.argmax(p))
+            hg, ag = divmod(k, p.shape[1])
         if hg > ag:
             w = t1
         elif ag > hg:
             w = t2
         else:
-            # Vid oavgjort: lag med högre vinstsannolikhet går vidare
-            w = t1 if np.tril(p, -1).sum() >= np.triu(p, 1).sum() else t2
+            # Oavgjort: lag med högre vinstsannolikhet går vidare
+            w = t1 if p1 >= 0.5 else t2
         l = t2 if w == t1 else t1
         num = m.get("num")
         if num is not None:
@@ -485,7 +491,9 @@ def most_likely_tournament(
             "match": m.get("num"),
             "team1": t1, "team2": t2,
             "goals1": hg, "goals2": ag,
+            "p1": p1, "p2": 1.0 - p1,
             "winner": w,
+            "played": played,
         })
 
     return (

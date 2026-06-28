@@ -54,6 +54,25 @@ for g, ts in teams_by_group.items():
 
 df_group, df_standings, df_knockout, champion = most_likely_tournament(wc, model, actual)
 
+# Slutspelsträdet delas i två halvor: vänster matar finalens team1, höger team2.
+# round_order ger matchnumren i en runda i vertikal ordning (så feeders radar upp sig).
+ko_by_num = {m["num"]: m for m in wc["matches"] if not m.get("group") and m.get("num")}
+
+def round_order(num: int, rnd: str) -> list[int]:
+    m = ko_by_num[num]
+    if m["round"] == rnd:
+        return [num]
+    feeders = [int(c[1:]) for c in (m["team1"], m["team2"]) if c.startswith("W")]
+    return [n for f in feeders for n in round_order(f, rnd)]
+
+final_m = next(m for m in wc["matches"] if m["round"] == "Final")
+sf_left, sf_right = int(final_m["team1"][1:]), int(final_m["team2"][1:])
+ko_rounds = ["Round of 32", "Round of 16", "Quarter-final", "Semi-final"]
+bracket = {
+    "left": [round_order(sf_left, r) for r in ko_rounds],
+    "right": [round_order(sf_right, r) for r in ko_rounds],
+}
+
 n_sims = 100_000
 df_sim, _, _ = monte_carlo(wc, model, n_sims=n_sims, seed=0, actual=actual)
 
@@ -68,6 +87,7 @@ dashboard_data = {
         "knockout": df_knockout.to_dicts(),
         "champion": champion,
     },
+    "bracket": bracket,
     "teamProbabilities": df_sim.to_dicts(),
     "nSims": n_sims,
 }
@@ -172,6 +192,40 @@ HTML = r"""<!DOCTYPE html>
   .prose strong { color: var(--text); }
   .formula { background: #f5efe0; border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 14px; overflow-x: auto; margin: 4px 0 14px; color: var(--primary); }
   .param { display: inline-block; background: #f3ede1; border-radius: 4px; padding: 1px 7px; font-variant-numeric: tabular-nums; font-weight: 600; color: var(--primary); }
+  /* Slutspelsträd */
+  .bracket-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 8px; }
+  .bracket { display: flex; align-items: stretch; gap: 0; min-width: 1600px; min-height: 760px; }
+  .bside { display: flex; flex: 1; }
+  .bside.right { flex-direction: row-reverse; }
+  .bcol { display: flex; flex-direction: column; flex: 1; min-width: 174px; }
+  .bcol-head { height: 26px; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; text-align: center; }
+  .bcol-body { flex: 1; display: flex; flex-direction: column; justify-content: space-around; padding: 0 9px; }
+  .bm { background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 7px; padding: 7px 9px; font-size: 13px; position: relative; box-shadow: 0 1px 2px rgba(10,37,64,0.04); }
+  .bside.right .bm { border-left: 1px solid var(--border); border-right: 3px solid var(--accent); }
+  .bm-played { border-left-color: var(--accent-dark); background: #fbf8f2; }
+  .bside.right .bm-played { border-right-color: var(--accent-dark); }
+  .bm-row { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; align-items: center; padding: 2px 0; }
+  .bm-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bm-prob { font-variant-numeric: tabular-nums; font-size: 11px; color: var(--muted); min-width: 30px; text-align: right; }
+  .bm-goal { font-variant-numeric: tabular-nums; font-weight: 700; min-width: 12px; text-align: right; }
+  .bm-win .bm-name { font-weight: 700; color: var(--primary); }
+  .bm-win .bm-prob { color: var(--accent-dark); font-weight: 600; }
+  .bm-lose { color: #a89e88; }
+  .bm-mark { position: absolute; top: 5px; right: 7px; }
+  .bcenter { display: flex; flex-direction: column; justify-content: center; align-items: center; min-width: 220px; padding: 0 6px; }
+  .bcenter .bcol-head { height: auto; margin-bottom: 8px; }
+  .final-card { width: 100%; background: linear-gradient(135deg, var(--primary) 0%, var(--primary-soft) 100%); border: 1px solid var(--accent); border-radius: 10px; padding: 12px 14px; color: #faf6ef; box-shadow: 0 6px 18px rgba(10,37,64,0.25); }
+  .final-card .bm-row { padding: 3px 0; font-size: 14px; }
+  .final-card .bm-name { color: #faf6ef; }
+  .final-card .bm-win .bm-name { color: #fff; font-weight: 800; }
+  .final-card .bm-win .bm-prob { color: var(--accent); }
+  .final-card .bm-lose { color: #9fb0c6; }
+  .final-card .bm-goal { color: #faf6ef; }
+  .bchamp { width: 100%; text-align: center; margin-top: 12px; padding: 12px; background: var(--card); border: 1px solid var(--accent); border-radius: 10px; }
+  .bchamp .label { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: var(--accent-dark); font-weight: 600; }
+  .bchamp .name { font-size: 22px; font-weight: 800; color: var(--primary); margin-top: 4px; }
+  .bthird { width: 100%; margin-top: 14px; opacity: 0.85; }
+  .bthird .bcol-head { color: var(--accent-dark); }
 </style>
 </head>
 <body>
@@ -183,6 +237,7 @@ HTML = r"""<!DOCTYPE html>
 <div class="tabs">
   <button class="tab active" data-tab="match">Matchprediktor</button>
   <button class="tab" data-tab="tournament">Mest troliga turnering</button>
+  <button class="tab" data-tab="bracket">Slutspelsträd</button>
   <button class="tab" data-tab="team">Lagets chanser</button>
   <button class="tab" data-tab="model">Om modellen</button>
 </div>
@@ -244,6 +299,12 @@ HTML = r"""<!DOCTYPE html>
     <div class="label">Predikterad världsmästare 2026</div>
     <div class="name" id="champion"></div>
   </div>
+</div>
+
+<div class="panel" id="panel-bracket">
+  <div class="legend"><span class="played-mark">✓</span> Spelad match (faktiskt resultat) &nbsp;·&nbsp; matcher utan bock visar modellens mest sannolika lag och resultat</div>
+  <div class="legend">Procenttalen är sannolikheten att laget går vidare (vinst i ordinarie + halva oavgjort, givet att lagen möts). Siffran längst till höger är troligast antal mål.</div>
+  <div class="bracket-scroll"><div class="bracket" id="bracket"></div></div>
 </div>
 
 <div class="panel" id="panel-team">
@@ -524,6 +585,60 @@ function renderTournament() {
   document.getElementById('champion').textContent = t.champion;
 }
 
+const ROUND_SV = {
+  'Round of 32': 'Sextondelsfinal',
+  'Round of 16': 'Åttondelsfinal',
+  'Quarter-final': 'Kvartsfinal',
+  'Semi-final': 'Semifinal',
+  'Final': 'Final',
+  'Match for third place': 'Bronsmatch',
+};
+
+function bracketMatch(m, isFinal) {
+  const w1 = m.winner === m.team1;
+  const pct = v => Math.round(v * 100) + '%';
+  const mark = m.played ? '<span class="bm-mark played-mark" title="Spelad match">✓</span>' : '';
+  const row = (name, prob, goal, win) =>
+    '<div class="bm-row ' + (win ? 'bm-win' : 'bm-lose') + '">' +
+      '<span class="bm-name">' + name + '</span>' +
+      '<span class="bm-prob">' + pct(prob) + '</span>' +
+      '<span class="bm-goal">' + goal + '</span></div>';
+  return '<div class="bm' + (isFinal ? ' final-card' : '') + (m.played ? ' bm-played' : '') + '">' +
+    row(m.team1, m.p1, m.goals1, w1) +
+    row(m.team2, m.p2, m.goals2, !w1) + mark + '</div>';
+}
+
+function renderBracket() {
+  const t = DATA.tournament;
+  const byNum = {};
+  let finalRow = null, thirdRow = null;
+  t.knockout.forEach(m => {
+    if (m.match != null) byNum[m.match] = m;
+    if (m.round === 'Final') finalRow = m;
+    if (m.round === 'Match for third place') thirdRow = m;
+  });
+  const rounds = ['Round of 32', 'Round of 16', 'Quarter-final', 'Semi-final'];
+  const col = (nums, roundName) =>
+    '<div class="bcol"><div class="bcol-head">' + ROUND_SV[roundName] + '</div><div class="bcol-body">' +
+    nums.map(n => bracketMatch(byNum[n], false)).join('') + '</div></div>';
+
+  const leftHtml = DATA.bracket.left.map((nums, i) => col(nums, rounds[i])).join('');
+  // Höger sida har samma kolumnordning (R32→SF); CSS row-reverse vänder den visuellt
+  const rightHtml = DATA.bracket.right.map((nums, i) => col(nums, rounds[i])).join('');
+
+  const center =
+    '<div class="bcenter"><div class="bcol-head">Final</div>' +
+    bracketMatch(finalRow, true) +
+    '<div class="bchamp"><div class="label">Världsmästare</div><div class="name">' + finalRow.winner + '</div></div>' +
+    (thirdRow ? '<div class="bthird"><div class="bcol-head">' + ROUND_SV['Match for third place'] +
+      '</div>' + bracketMatch(thirdRow, false) + '</div>' : '') +
+    '</div>';
+
+  document.getElementById('bracket').innerHTML =
+    '<div class="bside left">' + leftHtml + '</div>' + center +
+    '<div class="bside right">' + rightHtml + '</div>';
+}
+
 const TEAM_PROB_BY_NAME = Object.fromEntries(DATA.teamProbabilities.map(r => [r.team, r]));
 const STAGES = [
   { key: 'p_knockout', label: 'Slutspel' },
@@ -608,6 +723,7 @@ document.getElementById('team-a').addEventListener('change', updateMatch);
 document.getElementById('team-b').addEventListener('change', updateMatch);
 document.getElementById('neutral').addEventListener('change', updateMatch);
 renderTournament();
+renderBracket();
 updateMatch();
 buildTeamDropdown();
 document.getElementById('team-pick').addEventListener('change', updateTeam);
