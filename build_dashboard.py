@@ -68,9 +68,17 @@ def round_order(num: int, rnd: str) -> list[int]:
 final_m = next(m for m in wc["matches"] if m["round"] == "Final")
 sf_left, sf_right = int(final_m["team1"][1:]), int(final_m["team2"][1:])
 ko_rounds = ["Round of 32", "Round of 16", "Quarter-final", "Semi-final"]
+# feeders: för varje numrerad slutspelsmatch, vilka två matcher som matar in (för förbindelselinjer)
+ko_feeders = {
+    m["num"]: fs
+    for m in wc["matches"] if not m.get("group") and m.get("num")
+    if (fs := [int(c[1:]) for c in (m["team1"], m["team2"]) if c.startswith("W")])
+}
 bracket = {
     "left": [round_order(sf_left, r) for r in ko_rounds],
     "right": [round_order(sf_right, r) for r in ko_rounds],
+    "feeders": ko_feeders,
+    "finalFeeders": [sf_left, sf_right],
 }
 
 n_sims = 100_000
@@ -194,38 +202,42 @@ HTML = r"""<!DOCTYPE html>
   .param { display: inline-block; background: #f3ede1; border-radius: 4px; padding: 1px 7px; font-variant-numeric: tabular-nums; font-weight: 600; color: var(--primary); }
   /* Slutspelsträd */
   .bracket-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 8px; }
-  .bracket { display: flex; align-items: stretch; gap: 0; min-width: 1600px; min-height: 760px; }
-  .bside { display: flex; flex: 1; }
+  .bracket { position: relative; display: flex; align-items: stretch; min-width: 1560px; min-height: 860px; }
+  .bracket svg.bconn { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 0; overflow: visible; }
+  .bside { display: flex; flex: 1; position: relative; z-index: 1; }
   .bside.right { flex-direction: row-reverse; }
-  .bcol { display: flex; flex-direction: column; flex: 1; min-width: 174px; }
-  .bcol-head { height: 26px; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; text-align: center; }
-  .bcol-body { flex: 1; display: flex; flex-direction: column; justify-content: space-around; padding: 0 9px; }
-  .bm { background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 7px; padding: 7px 9px; font-size: 13px; position: relative; box-shadow: 0 1px 2px rgba(10,37,64,0.04); }
-  .bside.right .bm { border-left: 1px solid var(--border); border-right: 3px solid var(--accent); }
-  .bm-played { border-left-color: var(--accent-dark); background: #fbf8f2; }
-  .bside.right .bm-played { border-right-color: var(--accent-dark); }
-  .bm-row { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; align-items: center; padding: 2px 0; }
-  .bm-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .bm-prob { font-variant-numeric: tabular-nums; font-size: 11px; color: var(--muted); min-width: 30px; text-align: right; }
-  .bm-goal { font-variant-numeric: tabular-nums; font-weight: 700; min-width: 12px; text-align: right; }
-  .bm-win .bm-name { font-weight: 700; color: var(--primary); }
-  .bm-win .bm-prob { color: var(--accent-dark); font-weight: 600; }
-  .bm-lose { color: #a89e88; }
-  .bm-mark { position: absolute; top: 5px; right: 7px; }
-  .bcenter { display: flex; flex-direction: column; justify-content: center; align-items: center; min-width: 220px; padding: 0 6px; }
+  .bcol { display: flex; flex-direction: column; flex: 1; min-width: 170px; }
+  .bcol-head { height: 24px; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; text-align: center; }
+  .bcol-body { flex: 1; display: flex; flex-direction: column; justify-content: space-around; padding: 0 14px; }
+  /* En match = två staplade lagrutor (samma storlek på alla nivåer) */
+  .bmatch { position: relative; }
+  .bteam { display: grid; grid-template-columns: 1fr auto auto; gap: 7px; align-items: center; height: 27px; padding: 0 9px; font-size: 13px; background: var(--card); border: 1px solid var(--border); }
+  .bteam:first-child { border-radius: 6px 6px 0 0; }
+  .bteam:last-child { border-radius: 0 0 6px 6px; border-top: none; }
+  .bt-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+  .bt-prob { font-variant-numeric: tabular-nums; font-size: 11px; text-align: right; min-width: 30px; color: var(--muted); }
+  .bt-goal { font-variant-numeric: tabular-nums; font-weight: 700; text-align: right; min-width: 11px; color: var(--text); }
+  /* Vinnaren: fylld i primärfärg */
+  .bteam-win { background: var(--primary); border-color: var(--primary); }
+  .bteam-win .bt-name { color: #fff; font-weight: 700; }
+  .bteam-win .bt-prob { color: var(--accent); }
+  .bteam-win .bt-goal { color: #fff; }
+  .bteam-lose .bt-name { color: var(--muted); }
+  .bteam-lose .bt-prob, .bteam-lose .bt-goal { color: #b3aa97; }
+  .bmatch-played .bteam-lose { background: #fbf8f2; }
+  .bmatch-played .bt-mark { position: absolute; top: -7px; font-size: 11px; color: var(--accent-dark); background: var(--bg); padding: 0 3px; font-weight: 700; }
+  .bside.left .bmatch-played .bt-mark { right: 2px; }
+  .bside.right .bmatch-played .bt-mark { left: 2px; }
+  /* Final + mitten */
+  .bcenter { display: flex; flex-direction: column; justify-content: center; align-items: center; min-width: 196px; padding: 0 6px; position: relative; z-index: 1; }
   .bcenter .bcol-head { height: auto; margin-bottom: 8px; }
-  .final-card { width: 100%; background: linear-gradient(135deg, var(--primary) 0%, var(--primary-soft) 100%); border: 1px solid var(--accent); border-radius: 10px; padding: 12px 14px; color: #faf6ef; box-shadow: 0 6px 18px rgba(10,37,64,0.25); }
-  .final-card .bm-row { padding: 3px 0; font-size: 14px; }
-  .final-card .bm-name { color: #faf6ef; }
-  .final-card .bm-win .bm-name { color: #fff; font-weight: 800; }
-  .final-card .bm-win .bm-prob { color: var(--accent); }
-  .final-card .bm-lose { color: #9fb0c6; }
-  .final-card .bm-goal { color: #faf6ef; }
-  .bchamp { width: 100%; text-align: center; margin-top: 12px; padding: 12px; background: var(--card); border: 1px solid var(--accent); border-radius: 10px; }
-  .bchamp .label { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: var(--accent-dark); font-weight: 600; }
-  .bchamp .name { font-size: 22px; font-weight: 800; color: var(--primary); margin-top: 4px; }
-  .bthird { width: 100%; margin-top: 14px; opacity: 0.85; }
-  .bthird .bcol-head { color: var(--accent-dark); }
+  .bfinal { width: 100%; }
+  .bfinal .bteam-win { box-shadow: 0 0 0 2px var(--accent); }
+  .bchamp { width: 100%; text-align: center; margin-top: 14px; padding: 12px; background: linear-gradient(135deg, var(--primary) 0%, var(--primary-soft) 100%); border: 1px solid var(--accent); border-radius: 10px; box-shadow: 0 4px 14px rgba(10,37,64,0.2); }
+  .bchamp .label { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: var(--accent); font-weight: 600; }
+  .bchamp .name { font-size: 24px; font-weight: 800; color: #fff; margin-top: 4px; }
+  .bthird { width: 100%; margin-top: 18px; }
+  .bthird .bcol-head { color: var(--accent-dark); height: auto; margin-bottom: 6px; }
 </style>
 </head>
 <body>
@@ -395,7 +407,12 @@ document.querySelectorAll('.tab').forEach(btn => {
     btn.classList.add('active');
     document.getElementById('panel-' + btn.dataset.tab).classList.add('active');
     if (btn.dataset.tab === 'match' || btn.dataset.tab === 'team') window.dispatchEvent(new Event('resize'));
+    if (btn.dataset.tab === 'bracket') requestAnimationFrame(drawBracketConnectors);
   });
+});
+
+window.addEventListener('resize', () => {
+  if (document.getElementById('panel-bracket').classList.contains('active')) drawBracketConnectors();
 });
 
 function buildDropdowns() {
@@ -597,15 +614,16 @@ const ROUND_SV = {
 function bracketMatch(m, isFinal) {
   const w1 = m.winner === m.team1;
   const pct = v => Math.round(v * 100) + '%';
-  const mark = m.played ? '<span class="bm-mark played-mark" title="Spelad match">✓</span>' : '';
-  const row = (name, prob, goal, win) =>
-    '<div class="bm-row ' + (win ? 'bm-win' : 'bm-lose') + '">' +
-      '<span class="bm-name">' + name + '</span>' +
-      '<span class="bm-prob">' + pct(prob) + '</span>' +
-      '<span class="bm-goal">' + goal + '</span></div>';
-  return '<div class="bm' + (isFinal ? ' final-card' : '') + (m.played ? ' bm-played' : '') + '">' +
-    row(m.team1, m.p1, m.goals1, w1) +
-    row(m.team2, m.p2, m.goals2, !w1) + mark + '</div>';
+  const id = isFinal ? 'final' : m.match;
+  const team = (name, prob, goal, win) =>
+    '<div class="bteam ' + (win ? 'bteam-win' : 'bteam-lose') + '">' +
+      '<span class="bt-name">' + name + '</span>' +
+      '<span class="bt-prob">' + pct(prob) + '</span>' +
+      '<span class="bt-goal">' + goal + '</span></div>';
+  const mark = m.played ? '<span class="bt-mark" title="Spelad match">✓</span>' : '';
+  return '<div class="bmatch' + (m.played ? ' bmatch-played' : '') + '" data-num="' + id + '">' +
+    team(m.team1, m.p1, m.goals1, w1) +
+    team(m.team2, m.p2, m.goals2, !w1) + mark + '</div>';
 }
 
 function renderBracket() {
@@ -628,7 +646,7 @@ function renderBracket() {
 
   const center =
     '<div class="bcenter"><div class="bcol-head">Final</div>' +
-    bracketMatch(finalRow, true) +
+    '<div class="bfinal">' + bracketMatch(finalRow, true) + '</div>' +
     '<div class="bchamp"><div class="label">Världsmästare</div><div class="name">' + finalRow.winner + '</div></div>' +
     (thirdRow ? '<div class="bthird"><div class="bcol-head">' + ROUND_SV['Match for third place'] +
       '</div>' + bracketMatch(thirdRow, false) + '</div>' : '') +
@@ -637,6 +655,59 @@ function renderBracket() {
   document.getElementById('bracket').innerHTML =
     '<div class="bside left">' + leftHtml + '</div>' + center +
     '<div class="bside right">' + rightHtml + '</div>';
+}
+
+// Rita förbindelselinjer från varje vinnarruta till nästa match (SVG-overlay).
+// Körs när fliken visas/storlek ändras eftersom mått saknas medan panelen är dold.
+function drawBracketConnectors() {
+  const bracket = document.getElementById('bracket');
+  if (!bracket || bracket.offsetParent === null) return;
+  let svg = bracket.querySelector('svg.bconn');
+  if (!svg) {
+    svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('class', 'bconn');
+    bracket.insertBefore(svg, bracket.firstChild);
+  }
+  const W = bracket.scrollWidth, H = bracket.scrollHeight;
+  svg.setAttribute('width', W); svg.setAttribute('height', H);
+  svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+  svg.innerHTML = '';
+  const brect = bracket.getBoundingClientRect();
+  const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#b08d57';
+
+  const matchEl = num => bracket.querySelector('.bmatch[data-num="' + num + '"]');
+  const isRight = num => !!matchEl(num).closest('.bside.right');
+  // Vinnarrutans mittpunkt på ytterkanten (mot nästa match)
+  const winPoint = (num, outerRight) => {
+    const win = matchEl(num).querySelector('.bteam-win') || matchEl(num).querySelector('.bteam');
+    const r = win.getBoundingClientRect();
+    return { x: (outerRight ? r.right : r.left) - brect.left, y: r.top + r.height / 2 - brect.top };
+  };
+  // Förälderns inkommande punkt (kanten mot sina feeders), i höjd med hela matchen
+  const edgePoint = (num, right) => {
+    const r = matchEl(num).getBoundingClientRect();
+    return { x: (right ? r.right : r.left) - brect.left, y: r.top + r.height / 2 - brect.top };
+  };
+  const elbow = (from, to) => {
+    const midX = (from.x + to.x) / 2;
+    const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    p.setAttribute('d', 'M ' + from.x + ' ' + from.y + ' H ' + midX + ' V ' + to.y + ' H ' + to.x);
+    p.setAttribute('fill', 'none');
+    p.setAttribute('stroke', accent);
+    p.setAttribute('stroke-width', '1.6');
+    svg.appendChild(p);
+  };
+
+  // Numrerade föräldrar (R16/QF/SF): båda feeders på samma sida
+  for (const [numStr, fs] of Object.entries(DATA.bracket.feeders)) {
+    const num = +numStr, right = isRight(num);
+    const pp = edgePoint(num, right);           // inkant = förälderns sida mot feeders
+    fs.forEach(f => elbow(winPoint(f, !right), pp));
+  }
+  // Final: vänster och höger semifinal in mot mitten
+  const [sfL, sfR] = DATA.bracket.finalFeeders;
+  elbow(winPoint(sfL, true), edgePoint('final', false));
+  elbow(winPoint(sfR, false), edgePoint('final', true));
 }
 
 const TEAM_PROB_BY_NAME = Object.fromEntries(DATA.teamProbabilities.map(r => [r.team, r]));
@@ -724,6 +795,7 @@ document.getElementById('team-b').addEventListener('change', updateMatch);
 document.getElementById('neutral').addEventListener('change', updateMatch);
 renderTournament();
 renderBracket();
+requestAnimationFrame(drawBracketConnectors);
 updateMatch();
 buildTeamDropdown();
 document.getElementById('team-pick').addEventListener('change', updateTeam);
