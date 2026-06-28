@@ -228,16 +228,23 @@ HTML = r"""<!DOCTYPE html>
   .bmatch-played .bt-mark { position: absolute; top: -7px; font-size: 11px; color: var(--accent-dark); background: var(--bg); padding: 0 3px; font-weight: 700; }
   .bside.left .bmatch-played .bt-mark { right: 2px; }
   .bside.right .bmatch-played .bt-mark { left: 2px; }
-  /* Final + mitten */
-  .bcenter { display: flex; flex-direction: column; justify-content: center; align-items: center; min-width: 196px; padding: 0 6px; position: relative; z-index: 1; }
-  .bcenter .bcol-head { height: auto; margin-bottom: 8px; }
-  .bfinal { width: 100%; }
+  /* Final i exakt mitten: rutnät 1fr/auto/1fr centrerar finalmatchen mot semifinalerna */
+  /* padding-top matchar kolumnrubrikens höjd (24px) så finalen radar upp mot semifinalerna */
+  .bcenter { display: grid; grid-template-rows: 1fr auto 1fr; min-width: 212px; padding: 24px 8px 0; position: relative; z-index: 1; }
+  .btop { align-self: end; display: flex; flex-direction: column; gap: 10px; padding-bottom: 10px; }
+  .btop .bcol-head { height: auto; margin: 0; }
+  .bfinal { align-self: center; }
   .bfinal .bteam-win { box-shadow: 0 0 0 2px var(--accent); }
-  .bchamp { width: 100%; text-align: center; margin-top: 14px; padding: 12px; background: linear-gradient(135deg, var(--primary) 0%, var(--primary-soft) 100%); border: 1px solid var(--accent); border-radius: 10px; box-shadow: 0 4px 14px rgba(10,37,64,0.2); }
-  .bchamp .label { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: var(--accent); font-weight: 600; }
-  .bchamp .name { font-size: 24px; font-weight: 800; color: #fff; margin-top: 4px; }
-  .bthird { width: 100%; margin-top: 18px; }
-  .bthird .bcol-head { color: var(--accent-dark); height: auto; margin-bottom: 6px; }
+  .bbottom { align-self: start; padding-top: 10px; }
+  .bbottom .bcol-head { height: auto; margin: 0 0 6px; color: var(--accent-dark); }
+  /* Pall: guld/silver/brons ovanför finalen */
+  .bpodium { background: var(--card); border: 1px solid var(--accent); border-radius: 10px; padding: 8px 11px; box-shadow: 0 4px 14px rgba(10,37,64,0.12); }
+  .bp-row { display: grid; grid-template-columns: auto auto 1fr; gap: 9px; align-items: center; padding: 3px 0; }
+  .bp-row + .bp-row { border-top: 1px solid var(--border); }
+  .bp-medal { font-size: 15px; line-height: 1; }
+  .bp-rank { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); font-weight: 700; min-width: 36px; }
+  .bp-team { font-weight: 700; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bp-gold .bp-team { color: var(--primary); }
 </style>
 </head>
 <body>
@@ -644,12 +651,21 @@ function renderBracket() {
   // Höger sida har samma kolumnordning (R32→SF); CSS row-reverse vänder den visuellt
   const rightHtml = DATA.bracket.right.map((nums, i) => col(nums, rounds[i])).join('');
 
+  const runnerUp = finalRow.team1 === finalRow.winner ? finalRow.team2 : finalRow.team1;
+  const medal = (cls, icon, rank, team) =>
+    '<div class="bp-row ' + cls + '"><span class="bp-medal">' + icon + '</span>' +
+    '<span class="bp-rank">' + rank + '</span><span class="bp-team">' + team + '</span></div>';
+  const podium = '<div class="bpodium">' +
+    medal('bp-gold', '🥇', 'Guld', finalRow.winner) +
+    medal('bp-silver', '🥈', 'Silver', runnerUp) +
+    (thirdRow ? medal('bp-bronze', '🥉', 'Brons', thirdRow.winner) : '') +
+    '</div>';
   const center =
-    '<div class="bcenter"><div class="bcol-head">Final</div>' +
+    '<div class="bcenter">' +
+    '<div class="btop">' + podium + '<div class="bcol-head">Final</div></div>' +
     '<div class="bfinal">' + bracketMatch(finalRow, true) + '</div>' +
-    '<div class="bchamp"><div class="label">Världsmästare</div><div class="name">' + finalRow.winner + '</div></div>' +
-    (thirdRow ? '<div class="bthird"><div class="bcol-head">' + ROUND_SV['Match for third place'] +
-      '</div>' + bracketMatch(thirdRow, false) + '</div>' : '') +
+    '<div class="bbottom">' + (thirdRow ? '<div class="bcol-head">' + ROUND_SV['Match for third place'] +
+      '</div>' + bracketMatch(thirdRow, false) : '') + '</div>' +
     '</div>';
 
   document.getElementById('bracket').innerHTML =
